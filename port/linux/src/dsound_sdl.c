@@ -11,13 +11,20 @@ the sound cache may reuse its memory once the packet completes. The mixer
 runs on SDL's audio thread; for every voice it resamples to the output rate
 (which is how SetFrequency changes pitch) and applies:
 	- the stream volume (millibels),
-	- the front left and right mix bin volumes of 2D voices,
+	- the speaker mix bin volumes of 2D voices,
 	- for 3D voices, DirectSound's inverse distance rolloff between the
 	  minimum and maximum distance, an equal power pan from the source's
 	  direction in listener space, and the low frequency part of the I3DL2
 	  direct path, obstruction and occlusion levels.
 Doppler, the high frequency filters, cones and I3DL2 reverb are not
 modelled.
+
+The output is stereo or 5.1 (audio.channels). For 5.1 the speaker config
+reports AC-3, as an Xbox set to Dolby Digital does: the game then sends its
+2D voices to the center and back mix bins too (dsound_initialize_channel),
+and 3D voices are panned around the five full range speakers. The mix bins
+0-5 are in SDL's 5.1 order (FL, FR, FC, LFE, BL, BR), so bin n is output
+channel n. The game never sends anything to the LFE bin.
 
 Packets the mixer has finished are completed from DirectSoundDoWork, which
 the game calls every frame, and from Flush, never from the audio thread:
@@ -27,7 +34,7 @@ Without an audio device, a clock thread runs the same mixer into a scratch
 buffer, so streams still drain at their real rate.
 
 audio.volume sets the master volume (default 1.0); audio.enabled = false
-skips opening a device (port_config.c).
+skips opening a device; audio.channels chooses stereo or 5.1 (port_config.c).
 */
 
 #include "platform.h"
@@ -42,7 +49,7 @@ skips opening a device (port_config.c).
 #include <unistd.h>
 
 #define OUTPUT_RATE 48000
-#define OUTPUT_CHANNELS 2
+#define MAXIMUM_OUTPUT_CHANNELS 6
 #define MAXIMUM_STREAM_PACKETS 64
 #define MIX_CHUNK_FRAMES 1024
 
@@ -76,9 +83,9 @@ struct sdl_stream
 
 	BOOL paused;
 
-	/* 2D gains */
+	/* 2D gains: from each source channel to each speaker mix bin */
 	float volume;             /* SetVolume */
-	float mix_left, mix_right;
+	float mix_bins[2][MAXIMUM_OUTPUT_CHANNELS];
 	float headroom;
 
 	/* 3D */
@@ -96,7 +103,7 @@ struct sdl_stream
 	/* the last frame of the previous packet, for interpolating across packets */
 	float previous[2];
 	/* gains the mixer is ramping from, to avoid clicks */
-	float current_left, current_right;
+	float current_gains[2][MAXIMUM_OUTPUT_CHANNELS];
 	BOOL gains_valid;
 };
 
@@ -114,6 +121,8 @@ static struct
 } listener = { { 0, 0, 0 }, { 0, 0, 1 }, { 0, 1, 0 }, 1.0f, 1.0f };
 
 static float master_volume = 1.0f;
+/* 2 or 6, chosen when the device opens */
+static unsigned long output_channels = 2;
 
 static float gain_from_millibels(LONG millibels)
 {
@@ -224,9 +233,55 @@ static float dot3(const float *a, const float *b)
 	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-static void spatialize(const struct sdl_stream *stream, float *left, float *right)
+/* the 5.1 speakers around the listener, clockwise from the center, and
+their directions in radians (ITU-R BS.775: fronts at 30 degrees, backs at
+110) */
+#define SURROUND_RING_SPEAKERS 5
+static const unsigned long surround_ring_channel[SURROUND_RING_SPEAKERS] = { 2, 1, 5, 4, 0 };
+static const float surround_ring_angle[SURROUND_RING_SPEAKERS + 1] =
+{
+	0.0f, 0.52359878f, 1.91986218f, 4.36332313f, 5.75958653f, 6.28318531f,
+};
+
+/* the speaker gains of a 3D voice on 5.1: an equal power pan between the
+two speakers either side of the source, blended (in power) towards all
+five equally by spread, 0 to 1 */
+static void surround_pan(float side, float ahead, float spread, float *gains)
+{
+	float angle = atan2f(side, ahead);
+	unsigned long segment, speaker;
+
+	for (speaker = 0; speaker < MAXIMUM_OUTPUT_CHANNELS; speaker++)
+		gains[speaker] = 0.0f;
+	if (angle < 0.0f)
+		angle += 6.28318531f;
+	for (segment = 0; segment < SURROUND_RING_SPEAKERS - 1; segment++)
+	{
+		if (angle < surround_ring_angle[segment + 1])
+			break;
+	}
+	{
+		float width = surround_ring_angle[segment + 1] - surround_ring_angle[segment];
+		float position = (angle - surround_ring_angle[segment]) / width;
+
+		if (position < 0.0f) position = 0.0f;
+		if (position > 1.0f) position = 1.0f;
+		gains[surround_ring_channel[segment]] = cosf(position * 1.57079633f);
+		gains[surround_ring_channel[(segment + 1) % SURROUND_RING_SPEAKERS]] = sinf(position * 1.57079633f);
+	}
+	for (speaker = 0; speaker < SURROUND_RING_SPEAKERS; speaker++)
+	{
+		float *gain = &gains[surround_ring_channel[speaker]];
+
+		*gain = sqrtf((1.0f - spread) * *gain * *gain + spread / SURROUND_RING_SPEAKERS);
+	}
+}
+
+/* a 3D voice's gains to each speaker, for a mono source */
+static void spatialize(const struct sdl_stream *stream, float *gains)
 {
 	float offset[3], right_axis[3], distance, attenuation, pan, side, ahead;
+	unsigned long speaker;
 	int axis;
 
 	if (stream->mode == DS3DMODE_HEADRELATIVE)
@@ -259,9 +314,12 @@ static void spatialize(const struct sdl_stream *stream, float *left, float *righ
 			(stream->minimum_distance + listener.rolloff_factor * (clamped - stream->minimum_distance));
 	}
 
-	/* equal power pan; close sources and sources straight ahead or behind
-	stay centred, and neither ear drops below a quarter */
+	for (speaker = 0; speaker < MAXIMUM_OUTPUT_CHANNELS; speaker++)
+		gains[speaker] = 0.0f;
+	if (output_channels == 2)
 	{
+		/* equal power pan; close sources and sources straight ahead or behind
+		stay centred, and neither ear drops below a quarter */
 		float horizontal = sqrtf(side * side + ahead * ahead);
 		float angle;
 
@@ -270,26 +328,74 @@ static void spatialize(const struct sdl_stream *stream, float *left, float *righ
 			pan *= distance / stream->minimum_distance;
 		pan *= 0.75f;
 		angle = (pan + 1.0f) * 0.25f * 3.14159265f;
-		*left = cosf(angle) * 1.41421356f * 0.70710678f;
-		*right = sinf(angle) * 1.41421356f * 0.70710678f;
-	}
-	*left *= attenuation * stream->i3dl2_gain;
-	*right *= attenuation * stream->i3dl2_gain;
-}
-
-static void voice_gains(const struct sdl_stream *stream, float *left, float *right)
-{
-	if (stream->has_3d && stream->mode != DS3DMODE_DISABLE)
-	{
-		spatialize(stream, left, right);
+		gains[0] = cosf(angle) * 1.41421356f * 0.70710678f;
+		gains[1] = sinf(angle) * 1.41421356f * 0.70710678f;
 	}
 	else
 	{
-		*left = stream->mix_left;
-		*right = stream->mix_right;
+		/* a little spread keeps a panned source from vanishing between
+		speakers; sources inside the minimum distance, and those above or
+		below, spread out towards all five as the stereo pan centres them */
+		float horizontal = sqrtf(side * side + ahead * ahead);
+		float length = sqrtf(horizontal * horizontal + offset[1] * offset[1]);
+		float spread = 0.1f;
+
+		if (horizontal <= 1.0e-4f)
+			spread = 1.0f;
+		else if (length > 1.0e-4f && 0.5f * (1.0f - horizontal / length) > spread)
+			spread = 0.5f * (1.0f - horizontal / length);
+		if (distance < stream->minimum_distance && stream->minimum_distance > 0.0f &&
+			1.0f - distance / stream->minimum_distance > spread)
+		{
+			spread = 1.0f - distance / stream->minimum_distance;
+		}
+		surround_pan(side, ahead, spread, gains);
 	}
-	*left *= stream->volume * master_volume;
-	*right *= stream->volume * master_volume;
+	for (speaker = 0; speaker < MAXIMUM_OUTPUT_CHANNELS; speaker++)
+		gains[speaker] *= attenuation * stream->i3dl2_gain;
+}
+
+/* the gains from each source channel (a mono voice has only the first) to
+each output channel */
+static void voice_gains(const struct sdl_stream *stream, float gains[2][MAXIMUM_OUTPUT_CHANNELS])
+{
+	float scale = stream->volume * master_volume;
+	unsigned long speaker;
+
+	memset(gains, 0, 2 * sizeof(gains[0]));
+	if (stream->has_3d && stream->mode != DS3DMODE_DISABLE)
+	{
+		spatialize(stream, gains[0]);
+		if (stream->channels == 2)
+		{
+			if (output_channels == 2)
+			{
+				/* a stereo 3D voice keeps its sides */
+				gains[1][1] = gains[0][1];
+				gains[0][1] = 0.0f;
+			}
+			else
+			{
+				/* on 5.1 both channels go where the source is */
+				for (speaker = 0; speaker < MAXIMUM_OUTPUT_CHANNELS; speaker++)
+				{
+					gains[0][speaker] *= 0.5f;
+					gains[1][speaker] = gains[0][speaker];
+				}
+			}
+		}
+	}
+	else
+	{
+		memcpy(gains, stream->mix_bins, 2 * sizeof(gains[0]));
+		if (stream->channels == 1)
+			memset(gains[1], 0, sizeof(gains[1]));
+	}
+	for (speaker = 0; speaker < MAXIMUM_OUTPUT_CHANNELS; speaker++)
+	{
+		gains[0][speaker] *= scale;
+		gains[1][speaker] *= scale;
+	}
 }
 
 /* ---------- mixing */
@@ -300,27 +406,30 @@ static float packet_sample(const struct voice_packet *packet, unsigned long fram
 	return packet->samples[frame * channels + channel] * (1.0f / 32768.0f);
 }
 
-/* mixes one voice into output (frames of stereo float) */
+/* mixes one voice into output (frames of output_channels floats) */
 static void mix_voice(struct sdl_stream *stream, float *output, unsigned long frames)
 {
 	double step;
-	float target_left, target_right, left, right, ramp_left, ramp_right;
-	unsigned long frame;
+	float target[2][MAXIMUM_OUTPUT_CHANNELS], gains[2][MAXIMUM_OUTPUT_CHANNELS], ramp[2][MAXIMUM_OUTPUT_CHANNELS];
+	unsigned long frame, channel, speaker;
 
 	if (stream->paused || !stream->packet_count || !stream->sample_rate)
 		return;
 	step = (double)(stream->frequency ? stream->frequency : stream->sample_rate) / OUTPUT_RATE;
-	voice_gains(stream, &target_left, &target_right);
+	voice_gains(stream, target);
 	if (!stream->gains_valid)
 	{
-		stream->current_left = target_left;
-		stream->current_right = target_right;
+		memcpy(stream->current_gains, target, sizeof(target));
 		stream->gains_valid = TRUE;
 	}
-	left = stream->current_left;
-	right = stream->current_right;
-	ramp_left = (target_left - left) / (float)frames;
-	ramp_right = (target_right - right) / (float)frames;
+	for (channel = 0; channel < 2; channel++)
+	{
+		for (speaker = 0; speaker < output_channels; speaker++)
+		{
+			gains[channel][speaker] = stream->current_gains[channel][speaker];
+			ramp[channel][speaker] = (target[channel][speaker] - gains[channel][speaker]) / (float)frames;
+		}
+	}
 
 	for (frame = 0; frame < frames; frame++)
 	{
@@ -381,23 +490,18 @@ static void mix_voice(struct sdl_stream *stream, float *output, unsigned long fr
 			sample_left = a0 + (b0 - a0) * fraction;
 			sample_right = a1 + (b1 - a1) * fraction;
 		}
-		if (stream->channels == 1)
+		/* a mono voice has no second channel gains, so its mix bins or pan
+		split it across the speakers */
+		for (speaker = 0; speaker < output_channels; speaker++)
 		{
-			/* a mono voice's mix bins or pan split it across the speakers */
-			output[frame * 2] += sample_left * left;
-			output[frame * 2 + 1] += sample_left * right;
+			output[frame * output_channels + speaker] +=
+				sample_left * gains[0][speaker] + sample_right * gains[1][speaker];
+			gains[0][speaker] += ramp[0][speaker];
+			gains[1][speaker] += ramp[1][speaker];
 		}
-		else
-		{
-			output[frame * 2] += sample_left * left;
-			output[frame * 2 + 1] += sample_right * right;
-		}
-		left += ramp_left;
-		right += ramp_right;
 		stream->cursor += step;
 	}
-	stream->current_left = target_left;
-	stream->current_right = target_right;
+	memcpy(stream->current_gains, target, sizeof(target));
 }
 
 static void mix(float *output, unsigned long frames)
@@ -405,13 +509,13 @@ static void mix(float *output, unsigned long frames)
 	struct sdl_stream *stream;
 	unsigned long sample;
 
-	memset(output, 0, frames * OUTPUT_CHANNELS * sizeof(float));
+	memset(output, 0, frames * output_channels * sizeof(float));
 	pthread_mutex_lock(&mixer_lock);
 	for (stream = streams; stream; stream = stream->next)
 		mix_voice(stream, output, frames);
 	pthread_mutex_unlock(&mixer_lock);
 	/* soft limit rather than wrap or hard clip when many voices pile up */
-	for (sample = 0; sample < frames * OUTPUT_CHANNELS; sample++)
+	for (sample = 0; sample < frames * output_channels; sample++)
 	{
 		float value = output[sample];
 
@@ -432,28 +536,28 @@ static BOOL audio_started = FALSE;
 
 static void SDLCALL audio_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount)
 {
-	float buffer[MIX_CHUNK_FRAMES * OUTPUT_CHANNELS];
+	float buffer[MIX_CHUNK_FRAMES * MAXIMUM_OUTPUT_CHANNELS];
 
 	(void)userdata;
 	(void)total_amount;
 	while (additional_amount > 0)
 	{
-		unsigned long frames = (unsigned long)additional_amount / (OUTPUT_CHANNELS * sizeof(float));
+		unsigned long frames = (unsigned long)additional_amount / (output_channels * sizeof(float));
 
 		if (frames > MIX_CHUNK_FRAMES)
 			frames = MIX_CHUNK_FRAMES;
 		if (!frames)
 			frames = 1;
 		mix(buffer, frames);
-		SDL_PutAudioStreamData(stream, buffer, (int)(frames * OUTPUT_CHANNELS * sizeof(float)));
-		additional_amount -= (int)(frames * OUTPUT_CHANNELS * sizeof(float));
+		SDL_PutAudioStreamData(stream, buffer, (int)(frames * output_channels * sizeof(float)));
+		additional_amount -= (int)(frames * output_channels * sizeof(float));
 	}
 }
 
 /* without a device, drain voices in real time */
 static void *silent_clock_thread(void *parameter)
 {
-	float buffer[480 * OUTPUT_CHANNELS];
+	float buffer[480 * MAXIMUM_OUTPUT_CHANNELS];
 	struct timespec next;
 
 	(void)parameter;
@@ -472,6 +576,28 @@ static void *silent_clock_thread(void *parameter)
 	return NULL;
 }
 
+/* audio.channels: "stereo", "5.1", or "auto" for 5.1 when the default device
+has at least six channels */
+static unsigned long choose_output_channels(void)
+{
+#ifdef HALO_ANDROID
+	return 2;
+#else
+	const char *setting = config_string("audio.channels");
+	SDL_AudioSpec device;
+
+	if (!strcmp(setting, "stereo"))
+		return 2;
+	if (!strcmp(setting, "5.1"))
+		return 6;
+	if (strcmp(setting, "auto"))
+		platform_log("audio.channels \"%s\" is not \"auto\", \"stereo\" or \"5.1\"; using auto", setting);
+	if (SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &device, NULL) && device.channels >= 6)
+		return 6;
+	return 2;
+#endif
+}
+
 static void audio_start(void)
 {
 	SDL_AudioSpec spec;
@@ -483,8 +609,10 @@ static void audio_start(void)
 
 	if (config_boolean("audio.enabled") && platform_sdl_initialize())
 	{
+		output_channels = choose_output_channels();
+		platform_log("sound: %s", output_channels == 6 ? "5.1 surround" : "stereo");
 		spec.format = SDL_AUDIO_F32;
-		spec.channels = OUTPUT_CHANNELS;
+		spec.channels = (int)output_channels;
 		spec.freq = OUTPUT_RATE;
 		SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "512");
 		audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, audio_callback, NULL);
@@ -494,6 +622,7 @@ static void audio_start(void)
 			return;
 		}
 		platform_log("cannot open an audio device (%s); sound is silent", SDL_GetError());
+		output_channels = 2;
 	}
 	{
 		pthread_t thread;
@@ -750,7 +879,7 @@ HRESULT WINAPI IDirectSound_GetCaps(LPDIRECTSOUND sound, LPDSCAPS caps)
 HRESULT WINAPI IDirectSound_GetSpeakerConfig(LPDIRECTSOUND sound, LPDWORD speaker_config)
 {
 	(void)sound;
-	*speaker_config = DSSPEAKER_STEREO;
+	*speaker_config = output_channels == 6 ? DSSPEAKER_ENABLE_AC3 : DSSPEAKER_STEREO;
 	return DS_OK;
 }
 
@@ -855,8 +984,8 @@ HRESULT WINAPI IDirectSound_CreateSoundStream(LPDIRECTSOUND sound, LPCDSSTREAMDE
 	stream->volume = 1.0f;
 	/* DirectSound's default mix bins: a mono voice to both fronts, a
 	stereo voice's channels to the front left and right */
-	stream->mix_left = 1.0f;
-	stream->mix_right = 1.0f;
+	stream->mix_bins[0][0] = 1.0f;
+	stream->mix_bins[stream->channels - 1][1] = 1.0f;
 	stream->has_3d = (description->dwFlags & DSSTREAMCAPS_CTRL3D) != 0;
 	stream->mode = DS3DMODE_NORMAL;
 	stream->minimum_distance = DS3D_DEFAULTMINDISTANCE;
@@ -906,32 +1035,36 @@ HRESULT WINAPI IDirectSoundStream_SetVolume(LPDIRECTSOUNDSTREAM stream, LONG vol
 	STREAM_SETTER(record->volume = gain_from_millibels(volume))
 }
 
+/* the bins of a mask in the order of its set bits; a stereo voice sends its
+left channel to the first, third, ... and its right to the second, fourth,
+... (the game's stereo voices on AC-3 take front left, front right, back
+left, back right). Only the speaker bins are mixed: the crosstalk, reverb
+and effect sends are not modelled. volumes is NULL for 0 dB. */
+static void stream_set_mix_bins(struct sdl_stream *record, DWORD mix_bin_mask, const LONG *volumes, BOOL clear)
+{
+	unsigned long bit, index = 0;
+
+	if (clear)
+		memset(record->mix_bins, 0, sizeof(record->mix_bins));
+	for (bit = 0; bit < 32; bit++)
+	{
+		if (!(mix_bin_mask & (1UL << bit)))
+			continue;
+		if ((1UL << bit) & DSMIXBIN_SPEAKER_MASK)
+			record->mix_bins[record->channels == 2 ? index & 1 : 0][bit] = volumes ? gain_from_millibels(volumes[index]) : 1.0f;
+		index++;
+	}
+}
+
 HRESULT WINAPI IDirectSoundStream_SetMixBins(LPDIRECTSOUNDSTREAM stream, DWORD mix_bin_mask)
 {
-	STREAM_SETTER(
-		record->mix_left = (mix_bin_mask & DSMIXBIN_FRONT_LEFT) ? 1.0f : 0.0f;
-		record->mix_right = (mix_bin_mask & DSMIXBIN_FRONT_RIGHT) ? 1.0f : 0.0f)
+	STREAM_SETTER(stream_set_mix_bins(record, mix_bin_mask, NULL, TRUE))
 }
 
 /* volumes come in the order of the set bits of the mask */
 HRESULT WINAPI IDirectSoundStream_SetMixBinVolumes(LPDIRECTSOUNDSTREAM stream, DWORD mix_bin_mask, const LONG *volumes)
 {
-	struct sdl_stream *record = stream_from_interface(stream);
-	unsigned long bit, index = 0;
-
-	pthread_mutex_lock(&mixer_lock);
-	for (bit = 0; bit < 32; bit++)
-	{
-		if (!(mix_bin_mask & (1UL << bit)))
-			continue;
-		if ((1UL << bit) == DSMIXBIN_FRONT_LEFT)
-			record->mix_left = gain_from_millibels(volumes[index]);
-		else if ((1UL << bit) == DSMIXBIN_FRONT_RIGHT)
-			record->mix_right = gain_from_millibels(volumes[index]);
-		index++;
-	}
-	pthread_mutex_unlock(&mixer_lock);
-	return DS_OK;
+	STREAM_SETTER(stream_set_mix_bins(record, mix_bin_mask, volumes, FALSE))
 }
 
 HRESULT WINAPI IDirectSoundStream_SetMode(LPDIRECTSOUNDSTREAM stream, DWORD mode, DWORD apply)
