@@ -2198,7 +2198,16 @@ static void bind_textures(struct nv2a_pixel_shader_key *key, float texture_scale
 				const D3DCOLOR *palette = device.palettes[stage] && device.palettes[stage]->Data ?
 					(const D3DCOLOR *)PLATFORM_PHYSICAL_TO_VIRTUAL(device.palettes[stage]->Data) : NULL;
 
+				GLuint text_texture;
+
 				gl_texture = xgpu_texture_get((const DWORD *)texture, palette, &gl_target, &description);
+				text_texture = xgpu_text_glyphs_texture(texture,
+					screen_scale[0] > screen_scale[1] ? screen_scale[0] : screen_scale[1]);
+				if (text_texture && gl_target == GL_TEXTURE_2D)
+				{
+					gl_texture = text_texture;
+					description.levels = 1;
+				}
 				if (description.linear)
 				{
 					texture_scale[stage][0] = 1.0f / (float)description.width;

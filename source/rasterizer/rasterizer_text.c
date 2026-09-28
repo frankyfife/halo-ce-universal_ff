@@ -726,6 +726,19 @@ cache_hardware_format_character(
 				*destination++ = (word)((*source++ << 8) | 0x0FFF);
 		}
 
+#ifdef HALO_LINUX
+		/* the port draws a sharp copy of the cache from the 8-bit coverage */
+		halo_text_glyph_cached(
+			hardware_character_cache.bitmap->hardware_format,
+			hardware_character_cache.bitmap->width,
+			hardware_character_cache.bitmap->height,
+			hardware_character->x0,
+			hardware_character->y0,
+			font_character->bitmap_width,
+			font_character->bitmap_height,
+			(byte *)font->pixels.address + font_character->pixels_offset);
+#endif
+
 		rasterizer_bitmap_changed(hardware_character_cache.bitmap);
 
 		hardware_character_cache.x0 += font_character->bitmap_width;

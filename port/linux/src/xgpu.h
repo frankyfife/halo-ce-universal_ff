@@ -151,6 +151,11 @@ GLuint xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, GLenum *
 	struct xgpu_texture_description *description);
 void xgpu_texture_cache_begin_frame(void);
 
+/* the sharp copy of the game's text cache texture to draw in its place, when
+texture is that texture (text_glyphs.c); 0 otherwise. screen_scale is the
+screen's pixels per unit of its 480-line layout. */
+GLuint xgpu_text_glyphs_texture(const void *texture, float screen_scale);
+
 /* ---------- render targets */
 
 struct xgpu_render_target

@@ -42,6 +42,11 @@ long halo_screen_width(void);
 long halo_screen_commit(void);
 /* while TRUE, drawing shifts right to center 640-column layouts */
 void halo_screen_ui_offset(unsigned char centered);
+/* a glyph the text cache took (source/rasterizer/rasterizer_text.c), with the
+font's 8-bit coverage, for the sharp copy of the cache
+(port/linux/src/text_glyphs.c) */
+void halo_text_glyph_cached(void const *cache_texture, long cache_width, long cache_height,
+	short x0, short y0, short width, short height, unsigned char const *coverage);
 /* the mouse in the menus (source/interface/ui_widget.c) */
 #include "halo_ui_pointer.h"
 

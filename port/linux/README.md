@@ -150,6 +150,7 @@ the setting for one start of the game. It has priority over the file.
 | --- | --- | --- | --- |
 | `display.fullscreen` | `true` | `HALO_FULLSCREEN` | `true`: fullscreen at the resolution of the display. The picture has 480 lines of the game and the width of the display. `false`: a window with the 640x480 picture of the Xbox. F11 changes between the two. |
 | `display.window_scale` | `2` | `HALO_WINDOW_SCALE` | The size of the window, as a multiple of 640x480. You can change the size of the window. |
+| `display.sharp_text` | `true` | `HALO_SHARP_TEXT` | `true`: the text is sharp at the resolution of the display. `false`: the glyphs of the 480 lines are magnified, as in the original. Refer to "Sharp text". |
 | `display.vsync` | `true` | `HALO_NO_VSYNC=1` sets `false` | `true`: each frame waits for the display. |
 | `display.interpolation` | `true` | `HALO_INTERPOLATION` | `true`: one frame for each refresh of the display. `false`: 30 frames each second, as on the Xbox. Refer to "Frame rate". |
 | `audio.enabled` | `true` | `HALO_NO_AUDIO=1` sets `false` | `false`: no audio device. The sound continues without output. |
@@ -237,6 +238,29 @@ To see the frame rate:
 
 The frame rate shows at the bottom right of the screen. It is the mean over
 half a second.
+
+## Sharp text
+
+The fonts of the game are bitmaps for 480 lines. The game copies each glyph
+that it uses into a 128x128 cache texture with 4-bit alpha. In fullscreen,
+the display magnifies this texture several times. Thus the text was soft,
+with steps at the edges, and the filter showed parts of the adjacent glyphs
+at the edges of each glyph.
+
+The port keeps a larger copy of the cache (`src/text_glyphs.c`):
+
+- The copy is the scale of the screen larger, rounded up. At 3840x2160 it
+  is 5 times larger.
+- Each glyph is magnified from the 8-bit coverage of the font, with a
+  Catmull-Rom filter. Then the edge is sharpened to approximately one pixel
+  of the display, as with distance field text. Faint strokes keep their
+  strength.
+- An empty rim separates the glyphs in the copy.
+- The device uses the copy where the game uses the cache texture.
+
+Only text that the game draws from fonts changes. The large items of the
+main menu are bitmaps. To use the original text, set
+`display.sharp_text = false`.
 
 ## System link
 
@@ -478,6 +502,7 @@ Other changes are in `#ifdef HALO_LINUX`. All the native ports define
 | `game/player_control.c` | The mouse aims the player on controller 1 directly. |
 | `sound/game_sound.c` | The game calculates the obstruction of each sound one time for each tick, not for each frame. |
 | `cseries/errors.c` | `debug.txt` stays open between lines. |
+| `rasterizer/rasterizer_text.c` | The text cache gives each new glyph, with its 8-bit coverage, to the sharp text of the port (`src/text_glyphs.c`). |
 | `networking/`, `game/`, `interface/`, `bungie_net/network/` and the pools of objects, effects and sounds | The system link limits and the memory for them. |
 | `game/`, `objects/`, `units/`, `networking/` | The distributed netcode. Refer to `NETCODE.md`. |
 

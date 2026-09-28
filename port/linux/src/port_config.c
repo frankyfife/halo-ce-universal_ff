@@ -75,6 +75,9 @@ static const struct config_setting config_settings[] =
 		"Xbox's 4:3." },
 	{ "display.vsync", _config_boolean, "true", "HALO_NO_VSYNC", _environment_set_is_false, _platform_all,
 		"Wait for the display between frames; false draws as fast as possible." },
+	{ "display.sharp_text", _config_boolean, "true", "HALO_SHARP_TEXT", _environment_value, _platform_all,
+		"Draw text sharp at the display's resolution; false draws the game's\n"
+		"480-line glyphs magnified." },
 	{ "display.interpolation", _config_boolean, "true", "HALO_INTERPOLATION", _environment_value, _platform_all,
 		"Draw a frame for every display refresh, blending between the game's 30\n"
 		"ticks a second; false keeps the original 30 frames a second." },
