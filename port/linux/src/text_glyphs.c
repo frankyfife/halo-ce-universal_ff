@@ -52,6 +52,7 @@ static struct
 	BOOL disabled;
 	const void *game_texture;       /* the game's cache: its Direct3D texture */
 	long width, height;             /* of the game's cache */
+	float sharpness;                /* display.text_sharpness, 0 to 1 */
 	unsigned char *coverage;        /* width x height, 8-bit */
 	struct glyph_record glyphs[MAXIMUM_GLYPH_RECORDS];
 	unsigned long glyph_next;
@@ -165,9 +166,14 @@ static void glyph_magnify(const struct glyph_record *glyph)
 			}
 			else
 			{
+				float soft = value < 0.0f ? 0.0f : value > 1.0f ? 1.0f : value;
+
 				alpha = (value - 0.5f * strongest) * (float)scale / strongest + 0.5f;
 				alpha = alpha < 0.0f ? 0.0f : alpha > 1.0f ? 1.0f : alpha;
 				alpha *= strongest;
+				/* display.text_sharpness: from the smooth magnification (0) to
+				the sharpened edge (1) */
+				alpha = soft + (alpha - soft) * text.sharpness;
 			}
 			/* a quad's edge can fall inside a screen pixel, where the filter
 			reads the neighbouring glyph of the cache: an empty rim a fraction
@@ -215,6 +221,8 @@ void halo_text_glyph_cached(const void *cache_texture, long cache_width, long ca
 		if (text.disabled)
 			return;
 		text.game_texture = cache_texture;
+		text.sharpness = (float)config_real("display.text_sharpness");
+		text.sharpness = text.sharpness < 0.0f ? 0.0f : text.sharpness > 1.0f ? 1.0f : text.sharpness;
 		text.width = cache_width;
 		text.height = cache_height;
 		text.coverage = calloc((size_t)(cache_width * cache_height), 1);
