@@ -151,6 +151,7 @@ the setting for one start of the game. It has priority over the file.
 | `display.fullscreen` | `true` | `HALO_FULLSCREEN` | `true`: fullscreen at the resolution of the display. The picture has 480 lines of the game and the width of the display. `false`: a window with the 640x480 picture of the Xbox. F11 changes between the two. |
 | `display.window_scale` | `2` | `HALO_WINDOW_SCALE` | The size of the window, as a multiple of 640x480. You can change the size of the window. |
 | `display.sharp_text` | `true` | `HALO_SHARP_TEXT` | `true`: the text is sharp at the resolution of the display. `false`: the glyphs of the 480 lines are magnified, as in the original. Refer to "Sharp text". |
+| `display.text_sharpness` | `0.8` | `HALO_TEXT_SHARPNESS` | With `display.sharp_text`: 1.0 sharpens the edges of the glyphs to one pixel of the display, 0.0 magnifies them smoothly. Refer to "Sharp text". |
 | `display.anisotropy` | `16` | `HALO_ANISOTROPY` | The anisotropic filtering of the textures with mipmaps, 1 to 16. The game never uses anisotropic filtering (1, as on the Xbox). With 16, floors and walls seen at a slant stay sharp. |
 | `display.vsync` | `true` | `HALO_NO_VSYNC=1` sets `false` | `true`: each frame waits for the display. |
 | `display.interpolation` | `true` | `HALO_INTERPOLATION` | `true`: one frame for each refresh of the display. `false`: 30 frames each second, as on the Xbox. Refer to "Frame rate". |
@@ -258,6 +259,8 @@ The port keeps a larger copy of the cache (`src/text_glyphs.c`):
   strength.
 - An empty rim separates the glyphs in the copy.
 - The device uses the copy where the game uses the cache texture.
+- `display.text_sharpness` mixes the sharpened edge (1.0) with the smooth
+  magnification (0.0). The default 0.8 keeps the edge a little soft.
 
 Only text that the game draws from fonts changes. The large items of the
 main menu are bitmaps. To use the original text, set

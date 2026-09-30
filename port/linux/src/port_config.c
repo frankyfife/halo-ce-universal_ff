@@ -81,6 +81,9 @@ static const struct config_setting config_settings[] =
 	{ "display.sharp_text", _config_boolean, "true", "HALO_SHARP_TEXT", _environment_value, _platform_all,
 		"Draw text sharp at the display's resolution; false draws the game's\n"
 		"480-line glyphs magnified." },
+	{ "display.text_sharpness", _config_real, "0.8", "HALO_TEXT_SHARPNESS", _environment_value, _platform_all,
+		"With sharp_text: 0.0 draws the glyphs smoothly magnified, without steps;\n"
+		"1.0 sharpens their edges to one pixel of the display." },
 	{ "display.interpolation", _config_boolean, "true", "HALO_INTERPOLATION", _environment_value, _platform_all,
 		"Draw a frame for every display refresh, blending between the game's 30\n"
 		"ticks a second; false keeps the original 30 frames a second." },
