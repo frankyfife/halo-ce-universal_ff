@@ -151,6 +151,7 @@ the setting for one start of the game. It has priority over the file.
 | `display.fullscreen` | `true` | `HALO_FULLSCREEN` | `true`: fullscreen at the resolution of the display. The picture has 480 lines of the game and the width of the display. `false`: a window with the 640x480 picture of the Xbox. F11 changes between the two. |
 | `display.window_scale` | `2` | `HALO_WINDOW_SCALE` | The size of the window, as a multiple of 640x480. You can change the size of the window. |
 | `display.sharp_text` | `true` | `HALO_SHARP_TEXT` | `true`: the text is sharp at the resolution of the display. `false`: the glyphs of the 480 lines are magnified, as in the original. Refer to "Sharp text". |
+| `display.anisotropy` | `16` | `HALO_ANISOTROPY` | The anisotropic filtering of the textures with mipmaps, 1 to 16. The game never uses anisotropic filtering (1, as on the Xbox). With 16, floors and walls seen at a slant stay sharp. |
 | `display.vsync` | `true` | `HALO_NO_VSYNC=1` sets `false` | `true`: each frame waits for the display. |
 | `display.interpolation` | `true` | `HALO_INTERPOLATION` | `true`: one frame for each refresh of the display. `false`: 30 frames each second, as on the Xbox. Refer to "Frame rate". |
 | `audio.enabled` | `true` | `HALO_NO_AUDIO=1` sets `false` | `false`: no audio device. The sound continues without output. |

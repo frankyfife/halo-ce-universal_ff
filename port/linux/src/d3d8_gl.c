@@ -1988,6 +1988,27 @@ static GLenum address_mode(DWORD mode)
 	}
 }
 
+/* the anisotropy of a sampler: the game's own, where it asks for anisotropic
+filtering (Halo never does), or display.anisotropy for mipmapped textures
+filtered linearly, which sharpens floors and walls seen at a slant */
+static float sampler_anisotropy(DWORD min_filter, DWORD mip_filter, DWORD maximum)
+{
+	static long forced = -1;
+	float anisotropy = (min_filter == D3DTEXF_ANISOTROPIC && maximum > 1) ? (float)maximum : 1.0f;
+
+	if (forced < 0)
+	{
+		forced = config_integer("display.anisotropy");
+		if (forced < 1)
+			forced = 1;
+		if (forced > 16)
+			forced = 16;
+	}
+	if (min_filter != D3DTEXF_POINT && mip_filter != D3DTEXF_NONE && (float)forced > anisotropy)
+		anisotropy = (float)forced;
+	return anisotropy;
+}
+
 static void configure_sampler(int stage, BOOL mipmapped)
 {
 	/* the texture stage state each sampler was last configured from */
@@ -2033,7 +2054,7 @@ static void configure_sampler(int stage, BOOL mipmapped)
 	glSamplerParameterf(sampler, GL_TEXTURE_MIN_LOD, (float)state[D3DTSS_MAXMIPLEVEL]);
 	if (xgpu_capabilities.anisotropy)
 		glSamplerParameterf(sampler, GL_TEXTURE_MAX_ANISOTROPY_EXT,
-			(min_filter == D3DTEXF_ANISOTROPIC && state[D3DTSS_MAXANISOTROPY] > 1) ? (float)state[D3DTSS_MAXANISOTROPY] : 1.0f);
+			sampler_anisotropy(min_filter, mip_filter, state[D3DTSS_MAXANISOTROPY]));
 	if (xgpu_capabilities.border_clamp)
 	{
 		color_to_vec4(state[D3DTSS_BORDERCOLOR], border);
@@ -2043,7 +2064,7 @@ static void configure_sampler(int stage, BOOL mipmapped)
 	glSamplerParameterf(sampler, GL_TEXTURE_LOD_BIAS, dword_to_float(state[D3DTSS_MIPMAPLODBIAS]));
 	glSamplerParameterf(sampler, GL_TEXTURE_MIN_LOD, (float)state[D3DTSS_MAXMIPLEVEL]);
 	glSamplerParameterf(sampler, GL_TEXTURE_MAX_ANISOTROPY,
-		(min_filter == D3DTEXF_ANISOTROPIC && state[D3DTSS_MAXANISOTROPY] > 1) ? (float)state[D3DTSS_MAXANISOTROPY] : 1.0f);
+		sampler_anisotropy(min_filter, mip_filter, state[D3DTSS_MAXANISOTROPY]));
 	color_to_vec4(state[D3DTSS_BORDERCOLOR], border);
 	glSamplerParameterfv(sampler, GL_TEXTURE_BORDER_COLOR, border);
 #endif
